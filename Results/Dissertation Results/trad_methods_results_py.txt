@@ -1,0 +1,21 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+labels = ['FedAvg', 'lin_reg', 'd_tree']
+x_pos = np.arange(len(labels))
+mean_MSEs = [4.094246823482673, 4.016416745806998, 4.568865082699975]
+std_MSEs = [0.10646772680107844, 0.027950154882667902, 0.05734571103749318]
+
+fig, ax = plt.subplots()
+ax.bar(x_pos, mean_MSEs,
+       yerr=std_MSEs,
+       align='center',
+       alpha=0.5,
+       ecolor='black',
+       capsize=20)
+ax.set_ylabel('MSE')
+ax.set_xticks(x_pos)
+ax.set_xticklabels(labels)
+ax.set_yscale('log')
+ax.set_title('error bars plot')
+plt.show()
