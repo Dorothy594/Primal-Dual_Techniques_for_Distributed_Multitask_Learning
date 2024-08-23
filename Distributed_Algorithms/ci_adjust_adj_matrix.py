@@ -8,8 +8,6 @@ from collections import defaultdict
 from joblib import Parallel, delayed
 import multiprocessing
 import algorithm.optimizer as opt
-from sklearn.preprocessing import StandardScaler
-import pandas as pd
 
 
 np.random.seed(0)
@@ -19,85 +17,41 @@ def mean_squared_error(y_true, y_pred):
     return np.mean((y_true - y_pred) ** 2)
 
 
-def consensus_innovation(weights, datapoints, adj_matrix, learning_rate=0.1, lambda_reg=0):
-    num_nodes = adj_matrix.shape[0]
-    num_features = weights.shape[1]  # This should be 1
-
-    weights_new = np.copy(weights)
-
-    for i in range(num_nodes):
-        consensus_sum = np.zeros(num_features)
-        for j in range(num_nodes):
-            if adj_matrix[i, j] != 0:
-                consensus_sum += adj_matrix[i, j] * weights[j]
-
-        gradient = np.dot(datapoints[i]['features'].T,
-                          (np.dot(datapoints[i]['features'], weights[i]) - datapoints[i]['label']))
-        regularization_term = lambda_reg * weights[i]
-        gradient += regularization_term
-
-        weights_new[i] = consensus_sum - learning_rate * gradient
-
-    return weights_new
-
-
-def federated_learning_with_consensus_innovation_and_ima(initial_local_models, num_rounds, datapoints, adj_matrix,
-                                                         num_clients=200, client_fraction=0.9,
-                                                         learning_rate=0.15, alpha=0.1, lambda_reg=0):
-    global_model = np.copy(np.mean(initial_local_models, axis=0))  # Initialize global model
-    mse_list = []  # To store MSE values for each round
+def consensus_innovation(iterations, datapoints, adj_matrix, learning_rate=0.1, lambda_reg=0, calculate_score=False):  # 原lr=0.01
+    # datapoints = standardize_data(datapoints)
+    num_nodes = adj_matrix.shape[1]  # Number of nodes
+    weights = np.zeros((num_nodes, datapoints[0]['features'].shape[1]))  # Initialize local variables
     iteration_scores = []
 
-    num_features = global_model.shape[0]  # This will be 1
+    for i in range(num_nodes):
+        weights[i] = np.zeros(datapoints[i]['features'].shape[1])
 
-    for round in range(num_rounds):
-        print(f"Round {round + 1}/{num_rounds}")
+    for _ in range(iterations):
+        weights_new = np.copy(weights)
 
-        # Randomly select a fraction of clients
-        selected_clients = np.random.choice(range(num_clients),
-                                            size=int(client_fraction * num_clients),
-                                            replace=False)
+        for i in range(num_nodes):
+            consensus_sum = np.zeros(weights[i].shape)
+            for j in range(num_nodes):
+                if adj_matrix[i, j] != 0:
+                    consensus_sum += adj_matrix[i, j] * weights[j]
 
-        # Placeholder for aggregated model weights
-        local_weights = np.copy(initial_local_models)
-        updated_weights = np.copy(initial_local_models)
+            gradient = np.dot(datapoints[i]['features'].T, (np.dot(datapoints[i]['features'], weights[i]) - datapoints[i]['label']))
+            regularization_term = lambda_reg * weights[i]
+            gradient += regularization_term
 
-        for client in selected_clients:
-            # For each client, update the local weights using the global model
-            local_weights[client] = global_model
+            weights_new[i] = consensus_sum - learning_rate * gradient
 
-        # Apply consensus innovation on selected clients
-        updated_weights = consensus_innovation(local_weights, datapoints, adj_matrix, learning_rate, lambda_reg)
+        weights = np.copy(weights_new)
 
-        # Aggregate weights
-        agg_weights = np.mean(updated_weights[selected_clients], axis=0)
+        if calculate_score:
+            Y_pred = np.array([datapoints[i]['features'] @ weights[i] for i in range(num_nodes)])
+            true_labels = np.array([datapoints[i]['label'] for i in range(num_nodes)])
+            mse = mean_squared_error(true_labels, Y_pred)
+            iteration_scores.append(mse)
 
-        # IMA step: Update global model
-        global_model = alpha * global_model + (1 - alpha) * agg_weights
+    print(weights)
 
-        # Y_pred = np.array([datapoints[i]['features'] @ updated_weights[i] for i in range(num_clients)])
-        Y_pred = np.array([datapoints[i]['features'] @ updated_weights[i] for i in selected_clients])
-        # true_labels = np.array([datapoints[i]['label'] for i in range(num_clients)])
-        true_labels = np.array([datapoints[i]['label'] for i in selected_clients])
-        mse = mean_squared_error(true_labels, Y_pred)
-        iteration_scores.append(mse)
-
-    # import pdb;pdb.set_trace()
-    #
-    # 可视化权重
-    # Extracting the coordinates for the selected clients
-    x_values = [updated_weights[i, 0] for i in selected_clients]
-    y_values = [updated_weights[i, 1] for i in selected_clients]
-
-    # Creating the scatter plot
-    plt.scatter(x_values, y_values, c=y_values, cmap='Blues', marker='o', alpha=0.6, edgecolor='k')
-    plt.xlabel("Feature 1")
-    plt.ylabel("Feature 2")
-    plt.legend()
-    plt.show()
-    plt.close()
-
-    return iteration_scores, global_model
+    return iteration_scores, weights
 
 
 def get_sbm_data(cluster_sizes, G, W, m=1, n=2, noise_sd=0, is_torch_model=True):
@@ -173,17 +127,67 @@ def calculate_a_kl(k, l, matrix, degrees):
             calculate_a_kl(k, i, matrix, degrees) for i in range(len(matrix)) if i != k and matrix[k][i] == 1)
 
 
+# def create_a_matrix(matrix, degrees):
+#     size = len(matrix)
+#     a_matrix = np.zeros((size, size))
+#     for k in range(size):
+#         for l in range(size):
+#             a_matrix[k][l] = calculate_a_kl(k, l, matrix, degrees)
+#
+#     for k in range(size):
+#         for l in range(size):
+#             if k > size / 2 > l:
+#                 a_matrix[k][l] = 0
+#                 a_matrix[l][k] = 0
+#
+#     return a_matrix
+
+
+def normalize_rows(matrix):
+    size = len(matrix)
+    for i in range(size):
+        row_sum = np.sum(matrix[i])
+        if row_sum != 0:
+            matrix[i] = matrix[i] / row_sum
+    return matrix
+
+
+def normalize_columns(matrix):
+    size = len(matrix)
+    for j in range(size):
+        col_sum = np.sum(matrix[:, j])
+        if col_sum != 0:
+            matrix[:, j] = matrix[:, j] / col_sum
+    return matrix
+
+
 def create_a_matrix(matrix, degrees):
     size = len(matrix)
     a_matrix = np.zeros((size, size))
     for k in range(size):
         for l in range(size):
             a_matrix[k][l] = calculate_a_kl(k, l, matrix, degrees)
+
+    for k in range(size):
+        for l in range(size):
+            if k >= size / 2 > l:
+                a_matrix[k][l] = 0
+                a_matrix[l][k] = 0
+
+    # 进行行归一化和列归一化
+    a_matrix = normalize_rows(a_matrix)
+    a_matrix = normalize_columns(a_matrix)
+
+    # 迭代几次，以确保行列和都接近 1
+    for _ in range(10):
+        a_matrix = normalize_rows(a_matrix)
+        a_matrix = normalize_columns(a_matrix)
+
     return a_matrix
 
 
 def get_sbm_2blocks_data(weight, m=1, n=2, pin=0.5, pout=0.01, noise_sd=0, is_torch_model=True):
-    cluster_sizes = [100, 100]
+    cluster_sizes = [10, 100]
     probs = np.array([[pin, pout], [pout, pin]])
     G = nx.stochastic_block_model(cluster_sizes, probs, seed=0)
 
@@ -191,15 +195,14 @@ def get_sbm_2blocks_data(weight, m=1, n=2, pin=0.5, pout=0.01, noise_sd=0, is_to
     W2 = np.array([-weight, 2])
     W = [W1, W2]
 
+    N = len(G.nodes)
+    E = len(G.edges)
+
     return get_sbm_data(cluster_sizes, G, W, m, n, noise_sd, is_torch_model)
 
 
 def get_consensus_innovation_MSE(K, datapoints, samplingset, matrix):
-    num_clients = 200
-    num_features = 2  # Adjust this to match your specific model's requirements
-    temp = np.zeros(num_features)  # Initialize with correct dimensions for 1D weights
-    initial_local_models = np.stack([temp] * num_clients, axis=0)  # Create an array of shape (num_clients, num_features)
-    total_error, _ = federated_learning_with_consensus_innovation_and_ima(initial_local_models, K, datapoints, matrix)
+    total_error, _ = consensus_innovation(K, datapoints, matrix, calculate_score=True)
     consensus_innovation_MSE = {'total': total_error}
     return consensus_innovation_MSE
 
@@ -208,6 +211,8 @@ iteration = 1000
 weight = 2
 B, weight_vec, true_labels, datapoints = get_sbm_2blocks_data(weight, pin=0.5, pout=0.01, is_torch_model=False)
 all_degrees = [datapoint['degree'] for datapoint in datapoints.values()]
+print(f"all_degrees: {all_degrees}")
+print(f"mean value of all_degrees: {np.mean(all_degrees)}")
 adjacency_matrix = incidence_to_adjacency(B)
 
 degrees = [sum(row) for row in adjacency_matrix]
@@ -216,9 +221,11 @@ new_matrix = create_a_matrix(adjacency_matrix, degrees)
 num_tries = 1
 num_cores = multiprocessing.cpu_count()
 
+
 def fun(matrix):
     samplingset = random.sample([j for j in range(200)], k=int(0.8 * 200))
     return get_consensus_innovation_MSE(iteration, datapoints, samplingset, matrix)
+
 
 results = Parallel(n_jobs=num_cores)(delayed(fun)(new_matrix) for i in range(num_tries))
 
@@ -235,7 +242,16 @@ print(f'consensus + innovation:',
       '\n std_dev total MSE:', np.std(last_100_data))
 
 x_total = np.arange(len(total_values[0]))
+
 plt.semilogy(x_total, np.mean(total_values, axis=0), label='total')
 plt.title('Train')
 plt.show()
 plt.close()
+
+plt.figure(figsize=(8, 6))
+plt.imshow(new_matrix, cmap='binary', interpolation='none')
+plt.colorbar()
+plt.title('Adjacency Matrix Heatmap')
+plt.xlabel('Node Index')
+plt.ylabel('Node Index')
+plt.show()
